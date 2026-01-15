@@ -425,13 +425,14 @@
     </div>
   {/if}
 
-  {#if loading}
-    <div class='alert alert-info'>Loading...</div>
-  {/if}
-
   {#if repoCtx?.repo}
     {#if board}
       <section class='board'>
+        {#if loading}
+          <div class='loading-overlay'>
+            <div class='spinner'></div>
+          </div>
+        {/if}
         <div class='board-meta'>
           <h2 class='board-title'>{board.title}</h2>
           {#if board.description}
@@ -668,12 +669,6 @@
     color: #7f1d1d;
   }
 
-  .alert-info {
-    border-color: #bfdbfe;
-    background: #eff6ff;
-    color: #1e3a8a;
-  }
-
   .empty-state {
     background: #ffffff;
     border: 1px solid #e5e7eb;
@@ -684,6 +679,36 @@
   .empty-state h2 {
     margin: 0 0 0.5rem 0;
     font-size: 1.15rem;
+  }
+
+  .board {
+    position: relative;
+  }
+
+  .loading-overlay {
+    position: absolute;
+    inset: 0;
+    background: rgba(255, 255, 255, 0.7);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 10;
+    border-radius: 12px;
+  }
+
+  .spinner {
+    width: 40px;
+    height: 40px;
+    border: 3px solid #e5e7eb;
+    border-top-color: #6366f1;
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+  }
+
+  @keyframes spin {
+    to {
+      transform: rotate(360deg);
+    }
   }
 
   .board-meta {
