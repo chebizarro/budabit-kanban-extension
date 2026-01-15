@@ -425,7 +425,12 @@
     </div>
   {/if}
 
-  {#if repoCtx?.repo}
+  {#if loading && !board}
+    <section class='loading-state'>
+      <div class='spinner'></div>
+      <p class='muted'>Loading board...</p>
+    </section>
+  {:else if repoCtx?.repo}
     {#if board}
       <section class='board'>
         {#if loading}
@@ -683,6 +688,18 @@
 
   .board {
     position: relative;
+  }
+
+  .loading-state {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 1rem;
+    padding: 3rem;
+    background: #ffffff;
+    border: 1px solid #e5e7eb;
+    border-radius: 12px;
   }
 
   .loading-overlay {
