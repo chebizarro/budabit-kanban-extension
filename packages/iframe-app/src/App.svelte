@@ -31,6 +31,38 @@
     maintainers?: string[];
   };
 
+  // Bug 1 fix: Transform host context to expected shape
+  // Host sends {pubkey, name, relays} but Kanban expects {repoPubkey, repoName, repoRelays}
+  function transformHostContext(hostCtx: any): RepoContext {
+    // Handle both flat and nested repo structures
+    const repo = hostCtx?.repo || hostCtx;
+    return {
+      contextId: hostCtx?.contextId,
+      userPubkey: hostCtx?.userPubkey,
+      relays: hostCtx?.relays || repo?.relays || repo?.repoRelays || [],
+      repo: {
+        repoPubkey: repo?.pubkey || repo?.repoPubkey || '',
+        repoName: repo?.name || repo?.repoName || '',
+        repoNaddr: repo?.naddr || repo?.repoNaddr,
+        repoRelays: repo?.relays || repo?.repoRelays || [],
+        maintainers: repo?.maintainers || [],
+      },
+    };
+  }
+
+  // Bug 4 fix: Determine secure host origin instead of using wildcard
+  function getHostOrigin(): string {
+    if (document.referrer) {
+      try {
+        return new URL(document.referrer).origin;
+      } catch {
+        // Invalid referrer URL, fall back
+      }
+    }
+    // Fallback: use wildcard only if we cannot determine origin
+    return '*';
+  }
+
   let bridge = $state<WidgetBridge | null>(null);
   let repoCtx = $state<RepoContext | null>(null);
   let client = $state<RepoKanbanClient | null>(null);
@@ -109,21 +141,64 @@
   }
 
   $effect(() => {
+    // Bug 4 fix: Use secure host origin instead of wildcard
+    const hostOrigin = getHostOrigin();
     const b = createWidgetBridge({
       targetWindow: window.parent,
-      targetOrigin: '*',
+      targetOrigin: hostOrigin,
       timeoutMs: 15000,
     });
 
     bridge = b;
     error = null;
 
+    // Bug 2 fix: Handle widget:init lifecycle event
+    const offInit = b.onEvent('widget:init', (payload: any) => {
+      if (payload?.repoContext) {
+        repoCtx = transformHostContext(payload.repoContext);
+      }
+    });
+
+    // Bug 2 fix: Handle widget:mounted lifecycle event
+    const offMounted = b.onEvent('widget:mounted', () => {
+      // Widget is now mounted in the host - can start loading data
+      const r = normalizeRepo(repoCtx);
+      const c = client;
+      if (r && c) {
+        void loadBoardFor(r, c);
+      }
+    });
+
+    // Bug 2 fix: Handle widget:unmounting lifecycle event
+    const offUnmounting = b.onEvent('widget:unmounting', () => {
+      // Cancel pending operations, cleanup
+      loadSeq++; // Invalidate any in-flight loads
+      board = null;
+      cards = [];
+    });
+
+    // Existing context:update handler with transform
     const offContext = b.onEvent('context:update', (ctx) => {
-      repoCtx = (ctx ?? null) as RepoContext | null;
+      repoCtx = ctx ? transformHostContext(ctx) : null;
+    });
+
+    // Bug 3 fix: Handle context:repoUpdate for navigation between repos
+    const offRepoUpdate = b.onEvent('context:repoUpdate', (ctx: any) => {
+      repoCtx = transformHostContext(ctx);
+      // Trigger board reload for new repo
+      const r = normalizeRepo(repoCtx);
+      const c = client;
+      if (r && c) {
+        void loadBoardFor(r, c);
+      }
     });
 
     return () => {
+      offInit();
+      offMounted();
+      offUnmounting();
       offContext();
+      offRepoUpdate();
       b.destroy();
       bridge = null;
     };
