@@ -1,33 +1,16 @@
-# Flotilla Smart Widget Template
+# Budabit Kanban Extension
 
-Reusable starter template for building Flotilla **Smart Widgets**.
+NIP-100 Kanban board extension for Flotilla repository issue tracking and project management.
 
-This template provides a production-ready foundation for creating **iframe-based Smart Widgets** that integrate with Flotilla using:
+This extension provides a **repo-tab Smart Widget** that integrates with Flotilla repositories, displaying as a "Kanban" tab alongside Issues and Patches.
 
-- A **Smart Widget event** published to Nostr (kind `30033`)
-- A **sandboxed iframe UI** (Svelte 5)
-- A **typed, action-based postMessage bridge** compatible with Flotilla
+## Features
 
-## What is a Smart Widget?
-
-A Flotilla Smart Widget is represented on Nostr as a **kind `30033` addressable event**. The event describes:
-
-- The widget identifier (`d` tag)
-- Widget type (`l` tag): `action` or `tool`
-- Display metadata (`image`, `icon`)
-- A launch button that points to your hosted iframe app (`button ... app ...`)
-- Declared permissions (`permission` tags)
-
-Flotilla discovers and renders widgets based on these events and enforces privileged actions based on declared permissions.
-
-## Template Features
-
-- Svelte 5 iframe app example (Smart Widget "tool" pattern)
-- Framework-agnostic shared bridge package
-- TypeScript strict mode
-- Monorepo via pnpm workspaces
-- Unit tests (Vitest) + E2E tests (Playwright)
-- Smart Widget generator CLI (outputs kind `30033` event + optional `/.well-known/widget.json`)
+- **NIP-100 Kanban board** for repository issue tracking
+- **Repo-tab integration** - appears as a tab in repository views
+- **Smart Widget** published to Nostr (kind `30033`)
+- **Sandboxed iframe UI** (Svelte 5)
+- **Typed postMessage bridge** compatible with Flotilla
 
 ## Quick Start
 
@@ -43,7 +26,7 @@ pnpm install
 pnpm dev
 ```
 
-The widget iframe app will be available at `http://localhost:5173`.
+The widget iframe app will be available at `http://localhost:5178`.
 
 ### 3) Build
 
@@ -51,27 +34,151 @@ The widget iframe app will be available at `http://localhost:5173`.
 pnpm build
 ```
 
-### 4) Generate Smart Widget files (kind 30033)
+### 4) Generate & Publish to Nostr
 
-This writes:
-- `dist/widget/event.json` (unsigned kind `30033` event)
-- `dist/widget/widget.json` (optional `/.well-known/widget.json` file)
-- `dist/widget/PUBLISHING.md` (signing + publishing instructions)
+#### Generate the Smart Widget event (unsigned)
 
 ```bash
-pnpm manifest:generate \
-  --type tool \
-  --title 'My Smart Widget' \
-  --app-url 'https://cdn.example.com/my-widget/index.html' \
-  --icon 'https://cdn.example.com/my-widget/icon.png' \
-  --image 'https://cdn.example.com/my-widget/preview.png' \
-  --button-title 'Open' \
-  --permissions 'nostr:publish,ui:toast'
+pnpm manifest:generate
 ```
 
-Notes:
-- `--identifier` is optional; if omitted it will be derived.
-- `--pubkey` is optional; if provided, publishing instructions can include an `naddr` hint.
+This generates:
+- `dist/widget/event.json` (unsigned kind `30033` event with slot configuration)
+- `dist/widget/widget.json` (optional discovery file)
+- `dist/widget/PUBLISHING.md` (manual signing instructions)
+
+#### Publish to Nostr relays
+
+**Option A: Local signing (secret key)**
+
+Set your Nostr secret key as an environment variable:
+
+```bash
+export NOSTR_SK=your_hex_secret_key
+pnpm widget:publish
+```
+
+**Option B: Remote signing with NIP-46 (recommended)**
+
+Use a remote signer (bunker) for better security:
+
+```bash
+export NOSTR_BUNKER="bunker://remote-signer-pubkey?relay=wss://relay.example.com&secret=your-secret"
+pnpm widget:publish
+```
+
+Or pass the bunker URL directly:
+
+```bash
+pnpm manifest:publish -- --bunker "bunker://..."
+```
+
+**Dry run first:**
+
+```bash
+pnpm widget:publish:dry-run
+```
+
+The publish script will:
+1. Build the widget
+2. Generate the Smart Widget event
+3. Sign it (locally or via NIP-46 remote signer)
+4. Publish to relays (yakihonne, damus, nos.lol)
+5. Output the `naddr` for installation in Flotilla
+
+### 5) Install in Flotilla
+
+Copy the printed `naddr` and install it in Flotilla:
+- Settings → Extensions → Install Smart Widget (naddr)
+
+Or use the `installWidgetByNaddr` function programmatically.
+
+## Slot Configuration
+
+This extension uses a **repo-tab slot** which means it appears as a tab in repository views:
+
+```
+["slot", "repo-tab", "Kanban", "kanban"]
+```
+
+- **type**: `repo-tab` - integrates with repository tab bar
+- **label**: `Kanban` - display name in the tab
+- **path**: `kanban` - URL path segment
+
+## Environment Variables
+
+| Variable | Description |
+|----------|-------------|
+| `NOSTR_SK` or `NOSTR_SECRET_KEY` | Hex-encoded Nostr secret key for local signing |
+| `NOSTR_BUNKER` or `BUNKER_URL` | NIP-46 bunker URL for remote signing |
+| `GITHUB_TOKEN` or `GH_TOKEN` | GitHub token for release uploads |
+| `KANBAN_APP_URL` | Override the app URL (default: `http://localhost:5178`) |
+
+## Artifact Uploads
+
+The publish script can upload your built extension artifact to remote storage, making it accessible via a public URL for the Smart Widget event.
+
+### Upload to Blossom Servers
+
+[Blossom](https://github.com/hzrd149/blossom) is a decentralized blob storage protocol for Nostr. Upload your artifact to one or more Blossom servers:
+
+```bash
+pnpm manifest:publish-widget \
+  --blossom https://blossom.example.com \
+  --blossom https://cdn.other.com \
+  --artifact packages/iframe-app/dist/index.html
+```
+
+The script will:
+1. Compute the SHA256 hash of the artifact
+2. Create a signed Blossom upload auth event (kind 24242)
+3. Upload to each server
+4. Report the resulting URLs
+
+### Upload to GitHub Releases
+
+Upload your artifact as a GitHub Release asset:
+
+```bash
+export GITHUB_TOKEN=your_github_token
+pnpm manifest:publish-widget \
+  --github-repo owner/repo \
+  --github-tag v1.0.0 \
+  --artifact packages/iframe-app/dist/index.html
+```
+
+If the release doesn't exist, it will be created automatically.
+
+### Combined Example
+
+Publish the widget event and upload artifacts in one command:
+
+```bash
+export NOSTR_BUNKER="bunker://..."
+export GITHUB_TOKEN="ghp_..."
+
+pnpm manifest:publish-widget \
+  --blossom https://blossom.primal.net \
+  --github-repo budabit/kanban-extension \
+  --github-tag v1.0.0 \
+  --artifact packages/iframe-app/dist/index.html
+```
+
+## NIP-46 Remote Signing
+
+The publish script supports [NIP-46](https://github.com/nostr-protocol/nips/blob/master/46.md) remote signing for enhanced security. This allows you to sign events using a hardware device or dedicated signing application without exposing your private key.
+
+**Bunker URL format:**
+```
+bunker://<remote-signer-pubkey>?relay=<wss://relay>&secret=<optional-secret>
+```
+
+The script will:
+1. Generate a temporary client keypair
+2. Connect to the remote signer via the specified relays
+3. Request the user's public key via `get_public_key`
+4. Request event signing via `sign_event`
+5. Handle auth challenges if the signer requires additional authentication
 
 ## Bridge Protocol (Action-Based)
 
