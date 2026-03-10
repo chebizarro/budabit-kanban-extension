@@ -20,6 +20,8 @@ interface PublishOptions {
   githubRepo?: string;
   githubTag?: string;
   githubToken?: string;
+  // If true, upload artifact first and update event's app URL before signing
+  uploadFirst?: boolean;
 }
 
 const DEFAULT_RELAYS = [
@@ -53,6 +55,24 @@ async function publishWithBunker(
   return { signedEvent, relays, client };
 }
 
+// Helper to update the app URL in the event's button tag
+function updateEventAppUrl(event: Record<string, unknown>, newAppUrl: string): void {
+  const tags = event.tags as string[][];
+  for (let i = 0; i < tags.length; i++) {
+    const tag = tags[i];
+    if (!tag) continue;
+    // Button tag format: ["button", label, type, url]
+    if (tag[0] === 'button' && tag[2] === 'app') {
+      tags[i] = [tag[0] ?? 'button', tag[1] ?? 'Open', tag[2] ?? 'app', newAppUrl];
+      console.log(`   🔗 Updated app URL in event: ${newAppUrl}`);
+      return;
+    }
+  }
+  // If no app button found, add one
+  tags.push(['button', 'Open', 'app', newAppUrl]);
+  console.log(`   🔗 Added app URL to event: ${newAppUrl}`);
+}
+
 async function publishWidget(options: PublishOptions): Promise<void> {
   // Read the unsigned event
   const eventPath = options.eventPath;
@@ -66,6 +86,64 @@ async function publishWidget(options: PublishOptions): Promise<void> {
   // Determine signing method: bunker URL or local secret key
   const bunkerUrl = options.bunker || process.env.NOSTR_BUNKER || process.env.BUNKER_URL;
   const skHex = options.secretKey || process.env.NOSTR_SK || process.env.NOSTR_SECRET_KEY;
+
+  // If uploadFirst is enabled, upload artifact and update event URL before signing
+  let uploadedArtifactUrl: string | undefined;
+  if (options.uploadFirst && (options.blossomServers?.length || (options.githubRepo && options.githubTag))) {
+    console.log('\n📦 Uploading artifact before signing...');
+    
+    const artifactPath = options.artifactPath || getArtifactPath('.');
+    
+    if (options.blossomServers && options.blossomServers.length > 0) {
+      const sk = skHex ? Uint8Array.from(Buffer.from(skHex, 'hex')) : undefined;
+      // For NIP-46, we need to connect first to get the client for signing
+      let nip46ClientForUpload: Nip46Client | undefined;
+      if (bunkerUrl && !sk) {
+        nip46ClientForUpload = await connectToBunker(bunkerUrl);
+      }
+      
+      const results = await uploadToBlossom({
+        servers: options.blossomServers,
+        filePath: artifactPath,
+        secretKey: sk,
+        nip46Client: nip46ClientForUpload,
+      });
+      
+      if (results.length > 0 && results[0]) {
+        uploadedArtifactUrl = results[0].url;
+      }
+      
+      // Disconnect temporary client
+      if (nip46ClientForUpload) {
+        nip46ClientForUpload.disconnect();
+      }
+    }
+    
+    if (!uploadedArtifactUrl && options.githubRepo && options.githubTag) {
+      const token = options.githubToken || process.env.GITHUB_TOKEN || process.env.GH_TOKEN;
+      if (token) {
+        const [owner, repo] = options.githubRepo.split('/');
+        if (owner && repo) {
+          const result = await uploadToGithubRelease({
+            owner,
+            repo,
+            tag: options.githubTag,
+            filePath: artifactPath,
+            token,
+          });
+          uploadedArtifactUrl = result.url;
+        }
+      }
+    }
+    
+    if (uploadedArtifactUrl) {
+      updateEventAppUrl(unsignedEvent, uploadedArtifactUrl);
+      // Update created_at to current time since we modified the event
+      unsignedEvent.created_at = Math.floor(Date.now() / 1000);
+    } else {
+      console.warn('⚠️  No artifact uploaded, using original app URL');
+    }
+  }
 
   if (options.dryRun) {
     console.log('🔍 Dry run mode - not publishing to relays\n');
@@ -234,6 +312,7 @@ interface CliOptions {
   githubRepo?: string;
   githubTag?: string;
   githubToken?: string;
+  uploadFirst: boolean;
 }
 
 program
@@ -244,6 +323,7 @@ program
   .option('--secret-key <hex>', 'Nostr secret key in hex format (or use NOSTR_SK env var)')
   .option('--bunker <url>', 'NIP-46 bunker URL for remote signing (bunker://...)')
   .option('--dry-run', 'Show what would be published without actually publishing', false)
+  .option('--upload-first', 'Upload artifact first and update event app URL before signing', false)
   .option('--artifact <path>', 'Path to the built artifact (e.g., dist/index.html)')
   .option('--blossom <url...>', 'Blossom server URLs to upload artifact to')
   .option('--github-repo <owner/repo>', 'GitHub repository for release upload (e.g., user/repo)')
@@ -262,6 +342,7 @@ program
         githubRepo: options.githubRepo,
         githubTag: options.githubTag,
         githubToken: options.githubToken,
+        uploadFirst: options.uploadFirst,
       });
     } catch (error) {
       console.error('❌ Error publishing widget:', error);

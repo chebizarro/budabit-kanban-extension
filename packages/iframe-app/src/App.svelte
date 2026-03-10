@@ -86,6 +86,32 @@
 
   let loadSeq = 0;
 
+  // Convert technical error messages to user-friendly ones
+  function friendlyErrorMessage(msg: string): string {
+    const lower = msg.toLowerCase()
+    
+    // Bridge timeout errors - these are usually transient
+    if (lower.includes('widgetbridge') && lower.includes('timed out')) {
+      return 'Loading took too long. Click Reload to try again.'
+    }
+    if (lower.includes('workerbridge') && lower.includes('timed out')) {
+      return 'Loading took too long. Click Reload to try again.'
+    }
+    
+    // Network/connection errors
+    if (lower.includes('network') || lower.includes('fetch')) {
+      return 'Network error. Check your connection and try again.'
+    }
+    
+    // Permission errors
+    if (lower.includes('permission') || lower.includes('denied')) {
+      return 'Permission denied. The extension may need additional permissions.'
+    }
+    
+    // Return original if no match (but cap length)
+    return msg.length > 100 ? msg.slice(0, 100) + '...' : msg
+  }
+
   function normalizeRepo(ctx: RepoContext | null): RepoContextNormalized | null {
     const r = ctx?.repo;
     if (!r) return null;
@@ -146,7 +172,7 @@
     const b = createWidgetBridge({
       targetWindow: window.parent,
       targetOrigin: hostOrigin,
-      timeoutMs: 15000,
+      timeoutMs: 0, // No timeout - wait for proper EOSE/CLOSED from Nostr
     });
 
     bridge = b;
@@ -237,7 +263,7 @@
       if (seq !== loadSeq) return;
 
       const msg = err instanceof Error ? err.message : String(err);
-      error = msg;
+      error = friendlyErrorMessage(msg);
       board = null;
       cards = [];
     } finally {
@@ -306,7 +332,7 @@
       await loadBoardFor(r, c);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      error = msg;
+      error = friendlyErrorMessage(msg);
     } finally {
       loading = false;
     }
@@ -356,7 +382,7 @@
       setTimeout(() => void loadBoardFor(r, c), 1500);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      error = msg;
+      error = friendlyErrorMessage(msg);
     } finally {
       loading = false;
     }
@@ -396,7 +422,7 @@
       await loadBoardFor(r, c);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      error = msg;
+      error = friendlyErrorMessage(msg);
     } finally {
       loading = false;
     }
@@ -410,7 +436,11 @@
 
     if (card.status === newStatus) return;
 
-    loading = true;
+    // Optimistic update - move card immediately in UI
+    const oldStatus = card.status;
+    const newRank = nextRankForStatus(newStatus);
+    cards = cards.map(c => c.d === card.d ? {...c, status: newStatus, rank: newRank} : c);
+
     error = null;
 
     try {
@@ -421,15 +451,16 @@
         title: card.title,
         description: card.description,
         status: newStatus,
-        rank: nextRankForStatus(newStatus),
+        rank: newRank,
       });
 
-      await loadBoardFor(r, c);
+      // Reload in background to sync with relay
+      setTimeout(() => void loadBoardFor(r, c), 1000);
     } catch (err) {
+      // Revert optimistic update on error
+      cards = cards.map(c => c.d === card.d ? {...c, status: oldStatus} : c);
       const msg = err instanceof Error ? err.message : String(err);
-      error = msg;
-    } finally {
-      loading = false;
+      error = friendlyErrorMessage(msg);
     }
   }
 
@@ -470,6 +501,26 @@
     const c = client;
     if (!r || !c) return;
     void loadBoardFor(r, c);
+  }
+
+  async function handleScaleChange(newScale: number): Promise<void> {
+    const r = normalizeRepo(repoCtx);
+    const c = client;
+    if (!r || !c || !board) return;
+
+    // Optimistic update
+    board = { ...board, cardScale: newScale };
+
+    try {
+      await c.updateBoardSettings({
+        board,
+        relays: r.repoRelays,
+        cardScale: newScale,
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      error = friendlyErrorMessage(msg);
+    }
   }
 </script>
 
@@ -518,6 +569,20 @@
           {#if board.description}
             <p class='board-desc'>{board.description}</p>
           {/if}
+          <div class='scale-control'>
+            <label>
+              <span>Card Size:</span>
+              <input
+                type='range'
+                min='0.6'
+                max='1.6'
+                step='0.1'
+                value={board.cardScale ?? 1}
+                onchange={(e) => void handleScaleChange(Number((e.target as HTMLInputElement).value))}
+              />
+              <span class='scale-value'>{((board.cardScale ?? 1) * 100).toFixed(0)}%</span>
+            </label>
+          </div>
         </div>
 
         <div class='columns'>
@@ -530,7 +595,7 @@
                 </button>
               </div>
 
-              <div class='cards'>
+              <div class='cards' style:--card-scale={board.cardScale ?? 1}>
                 {#each cardsForStatus(col.id) as card (card.d)}
                   <div
                     class='card'
@@ -805,6 +870,10 @@
 
   .board-meta {
     margin-bottom: 0.75rem;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 1rem;
   }
 
   .board-title {
@@ -815,6 +884,30 @@
   .board-desc {
     margin: 0.25rem 0 0 0;
     color: #6b7280;
+    flex-basis: 100%;
+  }
+
+  .scale-control {
+    margin-left: auto;
+  }
+
+  .scale-control label {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-size: 0.85rem;
+    color: #6b7280;
+  }
+
+  .scale-control input[type='range'] {
+    width: 80px;
+    cursor: pointer;
+  }
+
+  .scale-value {
+    min-width: 3em;
+    text-align: right;
+    font-variant-numeric: tabular-nums;
   }
 
   .columns {
@@ -855,14 +948,16 @@
     display: flex;
     flex-direction: column;
     gap: 0.65rem;
+    --card-scale: 1;
   }
 
   .card {
     border: 1px solid #e5e7eb;
     border-radius: 12px;
     background: #fbfbfc;
-    padding: 0.75rem;
+    padding: calc(0.75rem * var(--card-scale));
     cursor: pointer;
+    font-size: calc(1rem * var(--card-scale));
   }
 
   .card:hover {
@@ -872,13 +967,13 @@
 
   .card-title {
     font-weight: 600;
-    margin-bottom: 0.35rem;
+    margin-bottom: calc(0.35rem * var(--card-scale));
   }
 
   .card-desc {
     color: #4b5563;
-    font-size: 0.92rem;
-    margin-bottom: 0.5rem;
+    font-size: calc(0.92em * var(--card-scale));
+    margin-bottom: calc(0.5rem * var(--card-scale));
     white-space: pre-wrap;
   }
 

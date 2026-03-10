@@ -7,6 +7,7 @@ export type KanbanBoard = {
   description: string;
   columns: KanbanColumn[];
   maintainers: string[];
+  cardScale?: number; // Font scale for cards (0.5 to 2.0, default 1.0)
 };
 
 export type KanbanCard = {

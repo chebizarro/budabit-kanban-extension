@@ -103,11 +103,20 @@ export class RepoKanbanClient {
 
     await this.nostr.publish({ event: ev, relays: ctx.relays });
 
-    const reloaded = await this.loadRepoBoard(ctx);
-    if (!reloaded.board) {
-      throw new Error('Failed to create or load board after publishing.');
+    // Retry loading the board with exponential backoff
+    // Relays may take time to index the newly published event
+    const maxRetries = 3;
+    const delays = [1000, 2000, 3000]; // 1s, 2s, 3s
+    
+    for (let attempt = 0; attempt < maxRetries; attempt++) {
+      await new Promise(r => setTimeout(r, delays[attempt]));
+      const reloaded = await this.loadRepoBoard(ctx);
+      if (reloaded.board) {
+        return reloaded.board;
+      }
     }
-    return reloaded.board;
+    
+    throw new Error('Failed to create or load board after publishing.');
   }
 
   async createCard(input: {
@@ -159,6 +168,23 @@ export class RepoKanbanClient {
       rank: input.rank,
       assignees: input.assignees,
       attachments: input.attachments,
+    });
+
+    await this.nostr.publish({ event: ev, relays: input.relays });
+  }
+
+  async updateBoardSettings(input: {
+    board: KanbanBoard;
+    relays: string[];
+    cardScale?: number;
+  }): Promise<void> {
+    const ev = buildBoardEvent({
+      d: input.board.d,
+      title: input.board.title,
+      description: input.board.description,
+      columns: input.board.columns,
+      maintainers: input.board.maintainers,
+      cardScale: input.cardScale,
     });
 
     await this.nostr.publish({ event: ev, relays: input.relays });

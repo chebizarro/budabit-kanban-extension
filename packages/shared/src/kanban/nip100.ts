@@ -64,6 +64,7 @@ export function buildBoardEvent(input: {
   description: string;
   columns: KanbanColumn[];
   maintainers: string[];
+  cardScale?: number;
 }): UnsignedEvent {
   const tags: string[][] = [];
 
@@ -78,6 +79,10 @@ export function buildBoardEvent(input: {
 
   for (const p of input.maintainers) {
     if (typeof p === 'string' && p.length > 0) tags.push(['p', p]);
+  }
+
+  if (typeof input.cardScale === 'number' && input.cardScale !== 1.0) {
+    tags.push(['card_scale', String(input.cardScale)]);
   }
 
   return {
@@ -163,6 +168,10 @@ export function parseBoard(event: NostrEvent): KanbanBoard {
 
   const maintainers = allTagValues(tags, 'p');
 
+  const cardScaleRaw = firstTagValue(tags, 'card_scale');
+  const cardScaleParsed = cardScaleRaw ? Number.parseFloat(cardScaleRaw) : undefined;
+  const cardScale = cardScaleParsed && Number.isFinite(cardScaleParsed) ? cardScaleParsed : undefined;
+
   return {
     d,
     pubkey: event.pubkey,
@@ -170,6 +179,7 @@ export function parseBoard(event: NostrEvent): KanbanBoard {
     description,
     columns: normalizeColumns(columns),
     maintainers,
+    cardScale,
   };
 }
 
