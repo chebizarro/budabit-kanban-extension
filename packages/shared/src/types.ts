@@ -171,12 +171,19 @@ export type WidgetEventMessage<A extends WidgetEventAction = WidgetEventAction> 
 /**
  * Fallback wire message (for host/client extensions beyond WidgetActionMap).
  */
-export type WidgetUnknownMessage = {
-  type: 'request' | 'response' | 'event';
-  action: string;
-  payload?: unknown;
-  id?: string;
-};
+export type WidgetUnknownMessage =
+  | {
+      type: 'request' | 'response';
+      action: string;
+      payload?: unknown;
+      id: string;
+    }
+  | {
+      type: 'event';
+      action: string;
+      payload?: unknown;
+      id?: never;
+    };
 
 export type WidgetWireMessage =
   | WidgetRequestMessage

@@ -137,6 +137,9 @@ describe('WidgetBridge', () => {
       const handler = vi.fn().mockResolvedValue({ data: 'result' });
       bridge.onRequest('custom:action', handler);
 
+      // Mock source window for response
+      const mockSource = { postMessage: vi.fn() };
+
       window.dispatchEvent(
         new MessageEvent('message', {
           data: {
@@ -145,7 +148,7 @@ describe('WidgetBridge', () => {
             action: 'custom:action',
             payload: { input: 'test' },
           },
-          source: targetWindow as unknown as Window,
+          source: mockSource as unknown as Window,
           origin: window.location.origin,
         })
       );
@@ -153,7 +156,7 @@ describe('WidgetBridge', () => {
       await new Promise((r) => setTimeout(r, 10));
 
       expect(handler).toHaveBeenCalledWith({ input: 'test' });
-      expect(targetWindow.postMessage).toHaveBeenCalledWith(
+      expect(mockSource.postMessage).toHaveBeenCalledWith(
         {
           type: 'response',
           id: 'host-req-1',

@@ -57,6 +57,9 @@ async function publishWithBunker(
 
 // Helper to update the app URL in the event's button tag
 function updateEventAppUrl(event: Record<string, unknown>, newAppUrl: string): void {
+  if (!event.tags || !Array.isArray(event.tags)) {
+    throw new Error('Event must have a tags array');
+  }
   const tags = event.tags as string[][];
   for (let i = 0; i < tags.length; i++) {
     const tag = tags[i];
@@ -89,41 +92,43 @@ async function publishWidget(options: PublishOptions): Promise<void> {
 
   // If uploadFirst is enabled, upload artifact and update event URL before signing
   let uploadedArtifactUrl: string | undefined;
+  let nip46ClientForSigning: Nip46Client | undefined;
+  
   if (options.uploadFirst && (options.blossomServers?.length || (options.githubRepo && options.githubTag))) {
     console.log('\n📦 Uploading artifact before signing...');
     
-    const artifactPath = options.artifactPath || getArtifactPath('.');
-    
-    if (options.blossomServers && options.blossomServers.length > 0) {
-      const sk = skHex ? Uint8Array.from(Buffer.from(skHex, 'hex')) : undefined;
-      // For NIP-46, we need to connect first to get the client for signing
-      let nip46ClientForUpload: Nip46Client | undefined;
-      if (bunkerUrl && !sk) {
-        nip46ClientForUpload = await connectToBunker(bunkerUrl);
+    try {
+      const artifactPath = options.artifactPath || getArtifactPath('.');
+      
+      if (options.blossomServers && options.blossomServers.length > 0) {
+        const sk = skHex ? Uint8Array.from(Buffer.from(skHex, 'hex')) : undefined;
+        // For NIP-46, connect once and reuse for both upload and signing
+        if (bunkerUrl && !sk) {
+          nip46ClientForSigning = await connectToBunker(bunkerUrl);
+        }
+        
+        const results = await uploadToBlossom({
+          servers: options.blossomServers,
+          filePath: artifactPath,
+          secretKey: sk,
+          nip46Client: nip46ClientForSigning,
+        });
+        
+        if (results.length > 0 && results[0]) {
+          uploadedArtifactUrl = results[0].url;
+        }
       }
       
-      const results = await uploadToBlossom({
-        servers: options.blossomServers,
-        filePath: artifactPath,
-        secretKey: sk,
-        nip46Client: nip46ClientForUpload,
-      });
-      
-      if (results.length > 0 && results[0]) {
-        uploadedArtifactUrl = results[0].url;
-      }
-      
-      // Disconnect temporary client
-      if (nip46ClientForUpload) {
-        nip46ClientForUpload.disconnect();
-      }
-    }
-    
-    if (!uploadedArtifactUrl && options.githubRepo && options.githubTag) {
-      const token = options.githubToken || process.env.GITHUB_TOKEN || process.env.GH_TOKEN;
-      if (token) {
-        const [owner, repo] = options.githubRepo.split('/');
-        if (owner && repo) {
+      if (!uploadedArtifactUrl && options.githubRepo && options.githubTag) {
+        const token = options.githubToken || process.env.GITHUB_TOKEN || process.env.GH_TOKEN;
+        if (!token) {
+          console.warn('⚠️  GitHub token required for GitHub upload. Skipping.');
+        } else {
+          const parts = options.githubRepo.split('/');
+          if (parts.length !== 2 || !parts[0] || !parts[1]) {
+            throw new Error(`Invalid github-repo format: "${options.githubRepo}". Expected format: owner/repo`);
+          }
+          const [owner, repo] = parts;
           const result = await uploadToGithubRelease({
             owner,
             repo,
@@ -134,14 +139,22 @@ async function publishWidget(options: PublishOptions): Promise<void> {
           uploadedArtifactUrl = result.url;
         }
       }
-    }
-    
-    if (uploadedArtifactUrl) {
-      updateEventAppUrl(unsignedEvent, uploadedArtifactUrl);
-      // Update created_at to current time since we modified the event
-      unsignedEvent.created_at = Math.floor(Date.now() / 1000);
-    } else {
-      console.warn('⚠️  No artifact uploaded, using original app URL');
+      
+      if (uploadedArtifactUrl) {
+        updateEventAppUrl(unsignedEvent, uploadedArtifactUrl);
+        // Update created_at to current time since we modified the event
+        unsignedEvent.created_at = Math.floor(Date.now() / 1000);
+      } else {
+        console.warn('⚠️  No artifact uploaded, using original app URL');
+      }
+    } catch (error) {
+      console.error('❌ Pre-signing upload failed:', error);
+      console.warn('⚠️  Continuing with original app URL');
+      // Clean up NIP-46 client if it was created
+      if (nip46ClientForSigning) {
+        nip46ClientForSigning.disconnect();
+        nip46ClientForSigning = undefined;
+      }
     }
   }
 
@@ -178,9 +191,16 @@ async function publishWidget(options: PublishOptions): Promise<void> {
   let nip46Client: Nip46Client | undefined;
 
   if (bunkerUrl) {
-    const result = await publishWithBunker(unsignedEvent, bunkerUrl, options.relays);
-    signedEvent = result.signedEvent;
-    nip46Client = result.client;
+    // Reuse existing NIP-46 client if we created one for uploadFirst
+    if (nip46ClientForSigning) {
+      console.log('🔐 Requesting remote signature (reusing connection)...');
+      signedEvent = await nip46ClientForSigning.signEvent(unsignedEvent as import('nostr-tools').UnsignedEvent);
+      nip46Client = nip46ClientForSigning;
+    } else {
+      const result = await publishWithBunker(unsignedEvent, bunkerUrl, options.relays);
+      signedEvent = result.signedEvent;
+      nip46Client = result.client;
+    }
   } else {
     const result = await publishWithLocalKey(unsignedEvent, skHex!, options.relays);
     signedEvent = result.signedEvent;
