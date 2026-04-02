@@ -178,9 +178,12 @@
     bridge = b;
     error = null;
 
+    let contextReceived = false;
+
     // Bug 2 fix: Handle widget:init lifecycle event
     const offInit = b.onEvent('widget:init', (payload: any) => {
       if (payload?.repoContext) {
+        contextReceived = true;
         repoCtx = transformHostContext(payload.repoContext);
       }
     });
@@ -205,11 +208,13 @@
 
     // Existing context:update handler with transform
     const offContext = b.onEvent('context:update', (ctx) => {
+      contextReceived = true;
       repoCtx = ctx ? transformHostContext(ctx) : null;
     });
 
     // Bug 3 fix: Handle context:repoUpdate for navigation between repos
     const offRepoUpdate = b.onEvent('context:repoUpdate', (ctx: any) => {
+      contextReceived = true;
       repoCtx = transformHostContext(ctx);
       // Trigger board reload for new repo
       const r = normalizeRepo(repoCtx);
@@ -219,7 +224,32 @@
       }
     });
 
+    // Fallback: Actively fetch context if not received via events
+    // This handles the race condition where widget:init fires before listeners are ready
+    const fallbackTimer = setTimeout(() => {
+      if (contextReceived) return;
+      
+      b.request('context:getRepo', {})
+        .then((res: any) => {
+          if (contextReceived) return; // Event arrived while we were fetching
+          if (res && typeof res === 'object' && res.status === 'ok' && res.repoContext) {
+            contextReceived = true;
+            repoCtx = transformHostContext(res.repoContext);
+            // Trigger initial load
+            const r = normalizeRepo(repoCtx);
+            const c = client;
+            if (r && c) {
+              void loadBoardFor(r, c);
+            }
+          }
+        })
+        .catch(() => {
+          // Host may not support this action — that's fine, we'll wait for events
+        });
+    }, 500);
+
     return () => {
+      clearTimeout(fallbackTimer);
       offInit();
       offMounted();
       offUnmounting();
